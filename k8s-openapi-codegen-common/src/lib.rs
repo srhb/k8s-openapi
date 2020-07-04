@@ -18,8 +18,6 @@
 //!
 //! WARNING: This crate is not meant to be used directly by end users and does not have a stable API.
 
-use lazy_static::lazy_static;
-
 #[doc(hidden)]
 pub mod swagger20;
 
@@ -70,10 +68,6 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {
 }
 
-lazy_static! {
-	pub static ref ROOT_K8S_OPENAPI: Vec<&'static str> = vec!["k8s_openapi"];
-}
-
 /// A mechanism for evaluating the root of a crate.
 ///
 /// This is required for code generation. Types which are inside the crate being generated
@@ -85,20 +79,14 @@ lazy_static! {
 /// Note: This is useful when creating a derived code generator, and not in k8s_openapi itself.
 pub trait CrateRooter {
 	/// Evaluate the crate root for an element in the provided namespace.
-	fn root(&self, namespace: &Vec<&str>) -> String;
+	fn root<'a, I>(&self, namespace: I) -> String where I: Iterator<Item = &'a str>;
 
 	/// Evaluate the crate root for an element in the provided namespace.
 	///
 	/// The namespace is provided as a string, and will be split by '::' or '.' into tokens.
 	/// The result is being passed to the function `root`.
-	fn for_namespace  (
-		&self,
-		namespace: &str
-	) -> String {
-		self.root(&namespace
-			.replace("::", ".")
-			.split('.')
-			.collect())
+	fn for_namespace(&self, namespace: &str) -> String {
+		self.root(namespace.replace("::", ".").split('.'))
 	}
 
 	/// Evaluate the crate root for an element of the 'k8s_openapi' module.
@@ -107,23 +95,23 @@ pub trait CrateRooter {
 	/// In `k8s_openapi` this should return `crate`, while in all derived code generators
 	/// this should return `k8s_openapi`.
 	fn for_k8s(&self) -> String {
-		self.root(&ROOT_K8S_OPENAPI)
+		self.root(std::iter::once("k8s_openapi"))
 	}
 }
 
 #[doc(hidden)]
-pub fn run<W>(
+pub fn run<C, W>(
 	definitions: &std::collections::BTreeMap<swagger20::DefinitionPath, swagger20::Schema>,
 	operations: &mut Vec<swagger20::Operation>,
 	definition_path: &swagger20::DefinitionPath,
 	ref_path_relative_to: swagger20::RefPathRelativeTo,
 	replace_namespaces: &[(&[std::borrow::Cow<'static, str>], &[std::borrow::Cow<'static, str>])],
-	crate_root: &dyn CrateRooter,
+	crate_root: &C,
 	vis: &str,
 	use_api_feature_for_operations: bool,
 	out: impl FnOnce(&[std::borrow::Cow<'_, str>], bool) -> std::io::Result<W>,
 	mut imports: impl FnMut(Option<String>, Option<String>) -> std::io::Result<()>,
-) -> Result<RunResult, Error> where W: std::io::Write {
+) -> Result<RunResult, Error> where C: CrateRooter, W: std::io::Write {
 	let definition = definitions.get(definition_path).ok_or_else(|| format!("definition for {} does not exist in spec", definition_path))?;
 
 	let mut run_result = RunResult {
@@ -1077,18 +1065,18 @@ fn get_comment_text<'a>(s: &'a str, indent: &'a str) -> impl Iterator<Item = std
 		})
 }
 
-fn get_fully_qualified_type_name(
+fn get_fully_qualified_type_name<C>(
 	ref_path: &swagger20::RefPath,
 	replace_namespaces: &[(&[std::borrow::Cow<'static, str>], &[std::borrow::Cow<'static, str>])],
-	crate_root: &dyn CrateRooter,
-) -> Result<String, Error> {
+	crate_root: &C,
+) -> Result<String, Error> where C: CrateRooter {
 	use std::fmt::Write;
 
 	match ref_path.relative_to {
 		swagger20::RefPathRelativeTo::Crate => {
 
 			let parts = ref_path.path.split('.');
-			let mut result = crate_root.root(&parts.clone().collect());
+			let mut result = crate_root.root(parts.clone());
 
 			let parts = replace_namespace(parts, replace_namespaces);
 
@@ -1163,11 +1151,11 @@ pub fn get_rust_ident(name: &str) -> std::borrow::Cow<'static, str> {
 	result.into()
 }
 
-fn get_rust_borrow_type(
+fn get_rust_borrow_type<C>(
 	schema_kind: &swagger20::SchemaKind,
 	replace_namespaces: &[(&[std::borrow::Cow<'static, str>], &[std::borrow::Cow<'static, str>])],
-	crate_root: &dyn CrateRooter,
-) -> Result<std::borrow::Cow<'static, str>, Error> {
+	crate_root: &C,
+) -> Result<std::borrow::Cow<'static, str>, Error> where C: CrateRooter {
 	match schema_kind {
 		swagger20::SchemaKind::Properties(_) => Err("Nested anonymous types not supported".into()),
 
@@ -1242,11 +1230,11 @@ fn get_rust_borrow_type(
 	}
 }
 
-fn get_rust_type(
+fn get_rust_type<C>(
 	schema_kind: &swagger20::SchemaKind,
 	replace_namespaces: &[(&[std::borrow::Cow<'static, str>], &[std::borrow::Cow<'static, str>])],
-	crate_root: &dyn CrateRooter,
-) -> Result<std::borrow::Cow<'static, str>, Error> {
+	crate_root: &C,
+) -> Result<std::borrow::Cow<'static, str>, Error> where C: CrateRooter {
 	match schema_kind {
 		swagger20::SchemaKind::Properties(_) => Err("Nested anonymous types not supported".into()),
 
@@ -1323,15 +1311,15 @@ fn replace_namespace<'a, I>(
 }
 
 #[doc(hidden)]
-pub fn write_operation(
+pub fn write_operation<C>(
 	out: &mut impl std::io::Write,
 	operation: &swagger20::Operation,
 	replace_namespaces: &[(&[std::borrow::Cow<'static, str>], &[std::borrow::Cow<'static, str>])],
-	crate_root: &dyn CrateRooter,
+	crate_root: &C,
 	vis: &str,
 	type_name_and_ref_path: &mut Option<(&str, &swagger20::RefPath)>,
 	is_under_api_feature: bool,
-) -> Result<(Option<String>, Option<String>), Error> {
+) -> Result<(Option<String>, Option<String>), Error> where C: CrateRooter {
 	writeln!(out)?;
 
 	writeln!(out, "// Generated from operation {}", operation.id)?;
@@ -1902,24 +1890,26 @@ fn get_operation_names(
 ) -> Result<(std::borrow::Cow<'static, str>, Option<String>, String), Error> {
 	let operation_id =
 		if strip_tag {
-			if let Some(ref tag) = operation.tag {
+			if let Some(tag) = &operation.tag {
 				// For functions associated with types (eg `Pod::list_core_v1_namespaced_pod`), the API version contained in the operation name
 				// is already obvious from the type's path (`core::v1::Pod`), so it can be stripped (`list_namespaced_pod`).
 				let tag: String =
 					tag.split('_')
-						.map(|part| {
-							let mut chars = part.chars();
-							if let Some(first_char) = chars.next() {
-								let rest_chars = chars.as_str();
-								std::borrow::Cow::Owned(format!("{}{}", first_char.to_uppercase(), rest_chars))
-							} else {
-								std::borrow::Cow::Borrowed("")
-							}
-						})
-						.collect();
+					.map(|part| {
+						let mut chars = part.chars();
+						if let Some(first_char) = chars.next() {
+							let rest_chars = chars.as_str();
+							std::borrow::Cow::Owned(format!("{}{}", first_char.to_uppercase(), rest_chars))
+						}
+						else {
+							std::borrow::Cow::Borrowed("")
+						}
+					})
+					.collect();
 
 				std::borrow::Cow::Owned(operation.id.replace(&tag, ""))
-			} else {
+			}
+			else {
 				std::borrow::Cow::Borrowed(&*operation.id)
 			}
 		}
@@ -1946,11 +1936,9 @@ fn get_operation_names(
 
 #[cfg(test)]
 mod test {
-	use super::*;
-
 	#[test]
-	fn test_rust_ident () {
-		assert_eq!("as_", get_rust_ident("as"));
-		assert_eq!("foo_bar", get_rust_ident("foo.bar"));
+	fn test_get_rust_ident() {
+		assert_eq!(super::get_rust_ident("as"), "as_");
+		assert_eq!(super::get_rust_ident("foo.bar"), "foo_bar");
 	}
 }

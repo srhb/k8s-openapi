@@ -1,11 +1,11 @@
 use crate::CrateRooter;
 
-pub(crate) fn generate(
+pub(crate) fn generate<C>(
 	mut writer: impl std::io::Write,
 	type_name: &str,
-	crate_root: &dyn CrateRooter,
+	crate_root: &C,
 	operation_action: OperationAction,
-) -> Result<(), crate::Error> {
+) -> Result<(), crate::Error> where C: CrateRooter {
 	let type_generics_impl = "<T>";
 	let type_generics_type = "<T>";
 	let type_generics_where: std::borrow::Cow<'_, str> = match operation_action {
